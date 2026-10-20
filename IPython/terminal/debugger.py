@@ -148,16 +148,39 @@ class TerminalPdb(Pdb):
         # debugger -> embed -> interactiveshell -> debugger.
         from . import embed
 
-        ipshell = embed.InteractiveShellEmbed(
+        options = dict(
             config=self.shell.config,
             banner1="*interactive*",
             exit_msg="*exiting interactive console...*",
         )
+        if _use_simple_prompt:
+            ipshell = embed.InteractiveShellEmbed(**options)
+        else:
+            # The shell must prompt where the debugger prompts. A debugger
+            # given its own terminal through pt_session_options (a pty,
+            # madbg, ...) may run in a process whose stdin and stdout are
+            # not a terminal at all: left to its defaults the embedded
+            # shell would then read input() from that stdin and never show
+            # up on the debugger's terminal. A prompt_toolkit application
+            # takes the input and output of the app session that is current
+            # when it is created, so create the shell inside one bound to
+            # the debugger's own; and since the debugger uses prompt_toolkit,
+            # so does the shell.
+            with create_app_session(input=self.pt_app.input, output=self.pt_app.output):
+                ipshell = embed.InteractiveShellEmbed(simple_prompt=False, **options)
         global_ns = self.curframe.f_globals
-        ipshell(
-            module=sys.modules.get(global_ns["__name__"], None),
-            local_ns=self._curframe_locals,
-        )
+        # Like pdb does around the code a command evaluates: while the shell
+        # runs, its output, tracebacks and input() go to the debugger's
+        # stdin/stdout rather than the process's.
+        saved = sys.stdin, sys.stdout
+        sys.stdin, sys.stdout = self.stdin, self.stdout
+        try:
+            ipshell(
+                module=sys.modules.get(global_ns["__name__"], None),
+                local_ns=self._curframe_locals,
+            )
+        finally:
+            sys.stdin, sys.stdout = saved
 
 
 def set_trace(frame=None):
